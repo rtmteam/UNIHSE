@@ -22,7 +22,10 @@ jobs:
         cache: 'npm'
 
     - name: Install Dependencies
-      run: npm install
+      run: npm ci
+
+    - name: Type Check
+      run: npm run lint
 
     - name: Build Application
       run: npm run build
@@ -32,4 +35,3 @@ jobs:
       with:
         folder: dist # The directory where Vite outputs your built website's HTML/JS/CSS files
         branch: gh-pages # The branch where the static pages will be hosted
-

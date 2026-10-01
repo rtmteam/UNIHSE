@@ -32,6 +32,8 @@ export const Sidebar = ({ isOpen, onClose }: SidebarProps) => {
   ];
 
   const handleLogout = () => {
+    // إبطال الجلسة في كود جوجل (بدون انتظار) ثم مسحها محلياً
+    fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     setUser(null);
     navigate("/login");
     if (onClose) onClose();

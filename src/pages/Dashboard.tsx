@@ -45,6 +45,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
+import { CRITICAL_RISK_SCORE } from "../lib/risk";
 import * as XLSX from "xlsx";
 
 export default function Dashboard() {
@@ -96,7 +97,9 @@ export default function Dashboard() {
 
   // Administrator notifications settings configuration
   const [telegramEnabled, setTelegramEnabled] = React.useState(false);
-  const [telegramBotToken, setTelegramBotToken] = React.useState("");
+  const [telegramBotToken, setTelegramBotToken] = React.useState(""); // يُستخدم لإدخال رمز جديد فقط — الرمز المحفوظ لا يُرسل للمتصفح
+  const [telegramTokenConfigured, setTelegramTokenConfigured] = React.useState(false);
+  const [isTestingTelegram, setIsTestingTelegram] = React.useState(false);
   const [telegramChatId, setTelegramChatId] = React.useState("");
   const [isSavingSettings, setIsSavingSettings] = React.useState(false);
   const [settingsAlert, setSettingsAlert] = React.useState<{type: 'success' | 'error', message: string} | null>(null);
@@ -117,9 +120,13 @@ export default function Dashboard() {
   const fetchIncidents = React.useCallback(() => {
     setIsLoading(true);
     fetch("/api/incidents")
-      .then((res) => res.json())
-      .then((data) => {
-        setIncidents(Array.isArray(data) ? data : []);
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (res.ok && Array.isArray(data)) {
+          setIncidents(data);
+        } else if (res.status !== 401) {
+          showBranchAlert("error", (language === "en" ? "Could not load incidents. " : "تعذّر تحميل البلاغات. ") + (data?.error || ""));
+        }
       })
       .catch((err) => console.error("Error loaded incident logs:", err))
       .finally(() => setIsLoading(false));
@@ -148,7 +155,7 @@ export default function Dashboard() {
   }, [activeTab, fetchBranches]);
 
   // Save updated branches array to backend
-  const saveBranchesLocal = async (updatedList: any[]) => {
+  const saveBranchesLocal = async (updatedList: any[], successMessage?: string) => {
     if (!isOnline) {
       showBranchAlert("error", language === "en" ? "Cannot save branches while offline." : "لا يمكن حفظ الفروع أثناء عدم الاتصال بالإنترنت.");
       return;
@@ -162,9 +169,10 @@ export default function Dashboard() {
       });
       if (response.ok) {
         setBranches(updatedList);
-        showBranchAlert("success", language === "en" ? "Changes saved locally." : "تم حفظ التعديلات محلياً بنجاح.");
+        showBranchAlert("success", successMessage || (language === "en" ? "Changes saved to Google Sheets." : "تم حفظ التعديلات في جوجل شيت بنجاح."));
       } else {
-        showBranchAlert("error", language === "en" ? "Failed to save changes." : "فشل في حفظ التعديلات.");
+        const errData = await response.json().catch(() => ({}));
+        showBranchAlert("error", (language === "en" ? "Failed to save changes. " : "فشل في حفظ التعديلات. ") + (errData.error || ""));
       }
     } catch (err) {
       console.error(err);
@@ -188,7 +196,8 @@ export default function Dashboard() {
       .then(data => {
         if (data) {
           setTelegramEnabled(!!data.telegramEnabled);
-          setTelegramBotToken(data.telegramBotToken || "");
+          setTelegramTokenConfigured(!!data.telegramTokenConfigured);
+          setTelegramBotToken("");
           setTelegramChatId(data.telegramChatId || "");
         }
       })
@@ -227,8 +236,9 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           telegramEnabled,
-          telegramBotToken,
-          telegramChatId
+          telegramChatId: telegramChatId.trim(),
+          // يُرسل الرمز فقط إذا كتب المدير رمزاً جديداً
+          ...(telegramBotToken.trim() ? { telegramBotToken: telegramBotToken.trim() } : {})
         })
       });
       if (res.ok) {
@@ -238,9 +248,10 @@ export default function Dashboard() {
         });
         fetchSettingsAndLogs();
       } else {
+        const errData = await res.json().catch(() => ({}));
         setSettingsAlert({
           type: "error",
-          message: language === "en" ? "Failed to save configuration." : "فشل في حفظ وتحديث البيانات."
+          message: (language === "en" ? "Failed to save configuration. " : "فشل في حفظ وتحديث البيانات. ") + (errData.error || "")
         });
       }
     } catch (err) {
@@ -251,6 +262,25 @@ export default function Dashboard() {
       });
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  // إرسال رسالة اختبار لتليجرام للتأكد من صحة الإعدادات
+  const handleTestTelegram = async () => {
+    if (!isOnline) return;
+    setIsTestingTelegram(true);
+    setSettingsAlert(null);
+    try {
+      const res = await fetch("/api/settings/test-telegram", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      setSettingsAlert(res.ok
+        ? { type: "success", message: language === "en" ? "Test message sent to Telegram." : "تم إرسال رسالة اختبار إلى تليجرام بنجاح." }
+        : { type: "error", message: (language === "en" ? "Telegram test failed: " : "فشل اختبار تليجرام: ") + (data.error || "") });
+      fetchSettingsAndLogs();
+    } catch {
+      setSettingsAlert({ type: "error", message: language === "en" ? "Network connection error." : "خطأ اتصال بالشبكة." });
+    } finally {
+      setIsTestingTelegram(false);
     }
   };
 
@@ -303,8 +333,8 @@ export default function Dashboard() {
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
+        const buffer = evt.target?.result as ArrayBuffer;
+        const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
         const rawRows = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
@@ -341,14 +371,16 @@ export default function Dashboard() {
           }
         });
 
-        saveBranchesLocal(updatedList);
-        showBranchAlert("success", language === "en" ? `Imported ${importedList.length} branches successfully.` : `تم استيراد ${importedList.length} فرع بنجاح.`);
+        saveBranchesLocal(
+          updatedList,
+          language === "en" ? `Imported ${importedList.length} branches successfully.` : `تم استيراد ${importedList.length} فرع بنجاح.`
+        );
       } catch (err) {
         console.error(err);
         showBranchAlert("error", language === "en" ? "Faulty Excel format." : "حدث خطأ في قراءة وتحليل ملف الإكسل.");
       }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
     e.target.value = ""; // Clear file input
   };
 
@@ -376,6 +408,12 @@ export default function Dashboard() {
   const handleEditBranchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isEditingBranch || !isEditingBranch.name.trim()) return;
+
+    const newName = isEditingBranch.name.trim().toLowerCase();
+    if (branches.some((b, i) => i !== isEditingBranch.index && String(b.name).toLowerCase() === newName)) {
+      showBranchAlert("error", language === "en" ? "Branch already exists." : "اسم الفرع موجود بالفعل.");
+      return;
+    }
 
     const updated = [...branches];
     updated[isEditingBranch.index] = {
@@ -428,11 +466,13 @@ export default function Dashboard() {
   const resolvedCount = incidents.filter((i) => i.status === "Resolved").length;
   
   // Custom formulas
+  // نسبة السلامة = نسبة البلاغات التي تم حلها من إجمالي البلاغات
   const safetyPercentage = totalCount > 0 
-    ? Math.max(50, Math.round(100 - (activeCount * 8))) 
+    ? Math.round((resolvedCount / totalCount) * 100) 
     : 100;
   
-  const criticalCount = incidents.filter((i) => Number(i.riskScore) >= 12).length;
+  // المخاطر الحرجة = مستوى مرتفع أو مرتفع جداً (30 فأكثر من 100)
+  const criticalCount = incidents.filter((i) => Number(i.riskScore) >= CRITICAL_RISK_SCORE).length;
 
   const stats = [
     { label: t.activeIncidents, value: activeCount.toString(), icon: Clock, color: "text-brand-primary" },
@@ -442,20 +482,15 @@ export default function Dashboard() {
   ];
 
   // Dynamically formatted trends
-  const trendData = incidents.slice(0, 7).reverse().map((inc, index) => ({
-    name: inc.id || `INC-${index + 1}`,
-    count: inc.riskScore || 5
-  }));
+  const trendData = [...incidents]
+    .sort((a, b) => (a.timestamp ? new Date(a.timestamp).getTime() : 0) - (b.timestamp ? new Date(b.timestamp).getTime() : 0))
+    .slice(-7)
+    .map((inc, index) => ({
+      name: inc.id || `INC-${index + 1}`,
+      count: Number(inc.riskScore) || 0
+    }));
 
-  const displayTrendData = trendData.length > 0 ? trendData : [
-    { name: 'Mon', count: 4 },
-    { name: 'Tue', count: 3 },
-    { name: 'Wed', count: 7 },
-    { name: 'Thu', count: 2 },
-    { name: 'Fri', count: 5 },
-    { name: 'Sat', count: 1 },
-    { name: 'Sun', count: 3 },
-  ];
+  const displayTrendData = trendData; // لا بيانات وهمية: الرسم يعرض البلاغات الحقيقية فقط
   // 1. handleToggleStatus allows changing safety incident logs real-time and syncing on sheets
   const handleToggleStatus = async (id: string, targetStatus: "Open" | "Resolved") => {
     if (!isOnline) {
@@ -470,16 +505,8 @@ export default function Dashboard() {
         body: JSON.stringify({ status: targetStatus })
       });
       if (response.ok) {
-        setIncidents(prev => prev.map(inc => {
-          if (inc.id === id) {
-            const updated = { ...inc, status: targetStatus };
-            if (selectedIncident && selectedIncident.id === id) {
-              setSelectedIncident(updated);
-            }
-            return updated;
-          }
-          return inc;
-        }));
+        setIncidents(prev => prev.map(inc => (inc.id === id ? { ...inc, status: targetStatus } : inc)));
+        setSelectedIncident((prev: any) => (prev && prev.id === id ? { ...prev, status: targetStatus } : prev));
         showBranchAlert("success", language === "en" ? `Status updated successfully to ${targetStatus}!` : `تم تحديث حالة البلاغ بنجاح إلى "${targetStatus === "Resolved" ? "تم الحل" : "جاري الحل"}"`);
       } else {
         showBranchAlert("error", language === "en" ? "Failed updating status." : "فشل في تحديث حالة البلاغ على الخادم.");
@@ -703,7 +730,12 @@ export default function Dashboard() {
                       {language === "en" ? "Dynamic" : "ديناميكي"}
                     </span>
                   </div>
-                  <div className="h-[300px]">
+                  <div className="h-[300px] relative">
+                    {displayTrendData.length === 0 && (
+                      <div className="absolute inset-0 flex items-center justify-center text-sm text-white/30 z-10">
+                        {language === "en" ? "No incidents recorded yet." : "لا توجد بلاغات مسجلة بعد."}
+                      </div>
+                    )}
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={displayTrendData}>
                         <defs>
@@ -1327,9 +1359,12 @@ export default function Dashboard() {
                       <label className="text-[11px] font-bold text-white/40 uppercase tracking-wider">{language === "en" ? "Bot Token (from @BotFather)" : "رمز تفعيل البوت (API Token)"}</label>
                       <input 
                         type="password"
+                        autoComplete="off"
                         value={telegramBotToken}
                         onChange={(e) => setTelegramBotToken(e.target.value)}
-                        placeholder="e.g. 7181928091:AAF9..."
+                        placeholder={telegramTokenConfigured
+                          ? (language === "en" ? "✓ Configured — leave empty to keep the current token" : "✓ مُعَدّ ومحفوظ بأمان — اتركه فارغاً للإبقاء على الرمز الحالي")
+                          : "e.g. 7181928091:AAF9..."}
                         disabled={!telegramEnabled}
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-brand-primary/40 disabled:opacity-40 font-mono text-brand-secondary"
                       />
@@ -1367,7 +1402,16 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2 max-w-2xl mx-auto">
+                <div className="flex justify-end gap-3 pt-2 max-w-2xl mx-auto">
+                  <button
+                    type="button"
+                    onClick={handleTestTelegram}
+                    disabled={isTestingTelegram || !telegramEnabled || !telegramTokenConfigured}
+                    className="bg-white/5 border border-white/10 text-white/80 hover:bg-white/10 disabled:opacity-40 px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    {isTestingTelegram ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    <span>{language === "en" ? "Send Test Message" : "إرسال رسالة اختبار"}</span>
+                  </button>
                   <button 
                     type="submit" 
                     disabled={isSavingSettings} 
@@ -1410,7 +1454,12 @@ export default function Dashboard() {
                           <p className="text-white/80 font-semibold">{language === "en" ? "Recipient:" : "قناة الإرسال للحركات:"} <span className="font-mono text-white/95">{log.recipient}</span></p>
                           <p className="text-[11px] text-white/50 leading-relaxed whitespace-pre-wrap font-mono mt-1 pt-1 border-t border-white/5">{log.message}</p>
                         </div>
-                        <span className="text-[10px] text-green-400 font-extrabold bg-green-500/10 px-2.5 py-1 rounded-lg border border-green-500/20 shrink-0 self-start md:self-center font-mono">
+                        <span className={cn(
+                          "text-[10px] font-extrabold px-2.5 py-1 rounded-lg border shrink-0 self-start md:self-center font-mono",
+                          String(log.status || "").startsWith("فشل")
+                            ? "text-red-400 bg-red-500/10 border-red-500/20"
+                            : "text-green-400 bg-green-500/10 border-green-500/20"
+                        )}>
                           {log.status || "تم الإرسال"}
                         </span>
                       </div>
@@ -1526,7 +1575,7 @@ export default function Dashboard() {
                           const isError = trimmedUrl.startsWith("Error:");
 
                           if (driveIdMatch && driveIdMatch[1]) {
-                            imageUrl = `https://docs.google.com/uc?export=view&id=${driveIdMatch[1]}`;
+                            imageUrl = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w800`;
                           }
 
                           if (isError) {

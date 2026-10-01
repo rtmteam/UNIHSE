@@ -32,7 +32,8 @@ import {
   WifiOff
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, matchIncidentId } from "../lib/utils";
+import { cn } from "../lib/utils";
+import { getRiskLevel } from "../lib/risk";
 import { Logo } from "../components/UI/Logo";
 
 type ActiveView = "selection" | "login" | "report" | "track_edit";
@@ -90,18 +91,17 @@ export default function Login() {
     setSearchedIncident(null);
     setEditSuccessMsg("");
     try {
-      const res = await fetch("/api/incidents");
+      const res = await fetch(`/api/track/${encodeURIComponent(searchQuery.trim())}`);
       if (res.ok) {
-        const list = await res.json();
-        const found = list.find((inc: any) => matchIncidentId(inc.id, searchQuery));
-        if (found) {
-          setSearchedIncident(found);
-          setEditProposedSolution(found.correctiveAction || "");
-          setEditIsResolved(found.status === "Resolved");
-          setEditNewFiles([]);
-        } else {
-          setSearchError(language === "en" ? "Incident ID not found in database registry." : "لم يتم العثور على بلاغ مطابق للرقم المدخل.");
-        }
+        const found = await res.json();
+        setSearchedIncident(found);
+        setEditProposedSolution(found.correctiveAction || "");
+        setEditIsResolved(found.status === "Resolved");
+        setEditNewFiles([]);
+      } else if (res.status === 404) {
+        setSearchError(language === "en" ? "Incident ID not found in database registry." : "لم يتم العثور على بلاغ مطابق للرقم المدخل.");
+      } else if (res.status === 429) {
+        setSearchError(language === "en" ? "Too many searches. Please wait a few minutes." : "عدد محاولات البحث كبير، يرجى الانتظار بضع دقائق.");
       } else {
         setSearchError(language === "en" ? "Failed to access databases. Please retry." : "فشل جلب قائمة البلاغات من المخدم.");
       }
@@ -140,10 +140,18 @@ export default function Login() {
           correctiveAction: updated.correctiveAction,
           files: updated.files || o.files
         }));
-        setEditSuccessMsg(language === "en" ? "Incident updated successfully!" : "تم تحديث البلاغ ورفع المرفقات بنجاح!");
+        const failedFiles: string[] = updated.fileErrors || [];
+        setEditSuccessMsg(
+          failedFiles.length > 0
+            ? (language === "en"
+                ? `Incident updated, but ${failedFiles.length} attachment(s) failed to upload.`
+                : `تم تحديث البلاغ، لكن تعذّر رفع ${failedFiles.length} من المرفقات.`)
+            : (language === "en" ? "Incident updated successfully!" : "تم تحديث البلاغ ورفع المرفقات بنجاح!")
+        );
         setEditNewFiles([]);
       } else {
-        alert(language === "en" ? "Could not apply changes." : "حدث خطأ أثناء حفظ التعديلات.");
+        const errData = await response.json().catch(() => ({}));
+        alert((language === "en" ? "Could not apply changes. " : "حدث خطأ أثناء حفظ التعديلات. ") + (errData.error || ""));
       }
     } catch (err) {
       console.error(err);
@@ -269,45 +277,7 @@ export default function Login() {
 
   // Dynamic risk level calculation
   const riskScore = reportForm.severity * reportForm.probability;
-  const getRiskLevel = (score: number) => {
-    if (score >= 46) return { 
-      label: language === "en" ? "VH → Very High (مرتفع جداً)" : "VH → مرتفع جداً (Very High)", 
-      color: "text-red-500", 
-      bg: "bg-red-500/20", 
-      border: "border-red-500/30" 
-    };
-    if (score >= 30) return { 
-      label: language === "en" ? "H → High (مرتفع)" : "H → مرتفع (High)", 
-      color: "text-orange-500", 
-      bg: "bg-orange-500/20", 
-      border: "border-orange-500/30" 
-    };
-    if (score >= 19) return { 
-      label: language === "en" ? "M+ → Medium Plus (أعلى من المتوسط)" : "M+ → أعلى من المتوسط (Medium Plus)", 
-      color: "text-amber-500", 
-      bg: "bg-amber-500/20", 
-      border: "border-amber-500/30" 
-    };
-    if (score >= 9) return { 
-      label: language === "en" ? "M → Medium (متوسط)" : "M → متوسط (Medium)", 
-      color: "text-yellow-500", 
-      bg: "bg-yellow-500/20", 
-      border: "border-yellow-500/30" 
-    };
-    if (score >= 4) return { 
-      label: language === "en" ? "L → Low (منخفض)" : "L → منخفض (Low)", 
-      color: "text-green-500", 
-      bg: "bg-green-500/25", 
-      border: "border-green-500/30" 
-    };
-    return { 
-      label: language === "en" ? "VL → Very Low (منخفض جداً)" : "VL → منخفض جداً (Very Low)", 
-      color: "text-cyan-400", 
-      bg: "bg-cyan-400/25", 
-      border: "border-cyan-400/30" 
-    };
-  };
-  const riskLevel = getRiskLevel(riskScore);
+  const riskLevel = getRiskLevel(riskScore, language);
 
   const [copied, setCopied] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
@@ -323,7 +293,7 @@ export default function Login() {
 الموقع الجغرافي: ${reportForm.incidentLocation || "N/A"}
 الفرع والمنطقة: ${reportForm.agency || "N/A"}
 تصنيف البلاغ: ${t.classifications[reportForm.classification as keyof typeof t.classifications] || reportForm.classification}
-مستوى الخطورة الإجمالي: ${riskScore}/25 (${riskLevel.label})
+مستوى الخطورة الإجمالي: ${riskScore}/100 (${riskLevel.label})
 تفاصيل الحادث: ${reportForm.description || "لا يوجد وصف للمشكلة"}
 الإجراء الفوري المتخذ محلياً: ${reportForm.correctiveAction || "لا يوجد"}`;
     
@@ -443,23 +413,51 @@ export default function Login() {
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (usernameInput.trim().toLowerCase() === "admin" && passwordInput === "admin") {
-      setLoginError("");
-      setUser({
-        id: "1",
-        name: language === "en" ? "HSE Executive Director (admin)" : "مدير وعميد الأمن والسلامة العامة",
-        role: "admin",
-        language
+    if (isLoggingIn) return;
+    if (!isOnline) {
+      setLoginError(language === "en" ? "Internet connection is required to log in." : "الاتصال بالإنترنت مطلوب لتسجيل الدخول.");
+      return;
+    }
+    setIsLoggingIn(true);
+    setLoginError("");
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: usernameInput.trim(), password: passwordInput })
       });
-      navigate("/dashboard");
-    } else {
-      setLoginError(
-        language === "en"
-          ? "Unauthorized access. Invalid username or password."
-          : "بيانات الدخول غير صحيحة. يرجى التحقق من اسم المستخدم وكلمة المرور."
-      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.token) {
+        setPasswordInput("");
+        setUser({
+          id: "1",
+          name: language === "en" ? "HSE Executive Director (admin)" : "مدير وعميد الأمن والسلامة العامة",
+          role: "admin",
+          language
+        }, data.token, data.expiresAt || null);
+        navigate("/dashboard");
+      } else if (res.status === 429) {
+        setLoginError(language === "en" ? "Too many failed attempts. Please wait 10 minutes." : "محاولات خاطئة كثيرة. يرجى الانتظار 10 دقائق ثم المحاولة.");
+      } else if (res.status === 503 && data.code === "NOT_CONFIGURED") {
+        setLoginError(language === "en" ? "Admin account is not configured yet in Google Apps Script." : "لم يتم إعداد حساب المدير بعد في كود جوجل (Script Properties).");
+      } else if (res.status === 401) {
+        setLoginError(
+          language === "en"
+            ? "Unauthorized access. Invalid username or password."
+            : "بيانات الدخول غير صحيحة. يرجى التحقق من اسم المستخدم وكلمة المرور."
+        );
+      } else {
+        setLoginError(language === "en" ? "Connection error. Please try again." : "تعذّر الاتصال بالخادم. يرجى المحاولة مرة أخرى.");
+      }
+    } catch (err) {
+      console.error(err);
+      setLoginError(language === "en" ? "Connection error. Please try again." : "تعذّر الاتصال بالخادم. يرجى المحاولة مرة أخرى.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -549,45 +547,6 @@ export default function Login() {
     setReportForm(prev => ({ ...prev, files: prev.files.filter((_, i) => i !== index) }));
   };
 
-  const triggerCameraMock = () => {
-    const mockBase64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // 1x1 GIF Base64
-    setReportForm(prev => ({
-      ...prev,
-      files: [...prev.files, { 
-        name: `CAMERA_SNAP_${Date.now()}.png`,
-        type: "image/png",
-        base64: mockBase64
-      }]
-    }));
-  };
-
-  const generateAiCorrective = async () => {
-    if (!isOnline) {
-      alert(language === "en" ? "Internet connection is required to generate AI recommendations." : "الاتصال بالإنترنت مطلوب لتوليد توصيات الذكاء الاصطناعي.");
-      return;
-    }
-    if (!reportForm.description) return;
-    setIsAiLoading(true);
-    try {
-      const response = await fetch("/api/ai/suggest-corrective-actions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          classification: reportForm.classification,
-          description: reportForm.description 
-        }),
-      });
-      const data = await response.json();
-      if (data.suggestions) {
-        setReportForm(prev => ({ ...prev, correctiveAction: data.suggestions }));
-      }
-    } catch (error) {
-      console.error("AI suggestions generation failed", error);
-    } finally {
-      setIsAiLoading(false);
-    }
-  };
-
   const handleFullReportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isOnline) {
@@ -613,16 +572,27 @@ export default function Login() {
           files: reportForm.files
         }),
       });
-      const data = await response.json();
-      const generateFallbackId = () => {
-        const l = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
-        const n = Math.floor(10000 + Math.random() * 90000);
-        return `${l}${n}`;
-      };
-      setLastIncidentId(data.id || generateFallbackId());
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.id) {
+        alert(
+          (language === "en"
+            ? "The report was NOT saved. Please check your connection and try again.\n"
+            : "لم يتم حفظ البلاغ. يرجى التحقق من الاتصال والمحاولة مرة أخرى.\n") + (data.error || "")
+        );
+        return;
+      }
+      setLastIncidentId(data.id);
       setSubmissionSuccess(true);
+      if (Array.isArray(data.fileErrors) && data.fileErrors.length > 0) {
+        alert(
+          language === "en"
+            ? `Report saved (ID ${data.id}), but ${data.fileErrors.length} attachment(s) failed to upload. You can add them later from "Track report".`
+            : `تم حفظ البلاغ برقم ${data.id}، لكن تعذّر رفع ${data.fileErrors.length} من المرفقات. يمكنك إضافتها لاحقاً من شاشة تتبع البلاغ.`
+        );
+      }
     } catch (error) {
       console.error(error);
+      alert(language === "en" ? "Network error. The report was NOT saved." : "خطأ في الاتصال بالشبكة. لم يتم حفظ البلاغ.");
     } finally {
       setIsSubmitting(false);
     }
@@ -1074,7 +1044,7 @@ export default function Login() {
                       <input 
                         type="text" 
                         required
-                        placeholder="admin"
+                        autoComplete="username"
                         value={usernameInput}
                         onChange={(e) => setUsernameInput(e.target.value)}
                         className={cn("w-full glass-input text-white", isRTL ? "pr-10" : "pl-10")}
@@ -1090,6 +1060,7 @@ export default function Login() {
                         type="password" 
                         required
                         placeholder="••••••••"
+                        autoComplete="current-password"
                         value={passwordInput}
                         onChange={(e) => setPasswordInput(e.target.value)}
                         className={cn("w-full glass-input text-white", isRTL ? "pr-10" : "pl-10")}
@@ -1097,8 +1068,8 @@ export default function Login() {
                     </div>
                   </div>
 
-                  <GlassButton type="submit" className="w-full py-4 text-sm font-bold tracking-wider uppercase mt-4">
-                    {t.login}
+                  <GlassButton type="submit" disabled={isLoggingIn} className="w-full py-4 text-sm font-bold tracking-wider uppercase mt-4">
+                    {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : t.login}
                   </GlassButton>
                 </form>
 

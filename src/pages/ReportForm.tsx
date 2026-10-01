@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
+import { getRiskLevel } from "../lib/risk";
 import { useNavigate } from "react-router-dom";
 
 type FormState = {
@@ -72,7 +73,7 @@ export default function ReportForm() {
 الموقع الجغرافي: ${form.incidentLocation || "N/A"}
 الفرع والمنطقة: ${form.agency || "N/A"}
 تصنيف البلاغ: ${t.classifications[form.classification as keyof typeof t.classifications] || form.classification}
-مستوى الخطورة الإجمالي: ${riskScore}/25 (${riskLevel.label})
+مستوى الخطورة الإجمالي: ${riskScore}/100 (${riskLevel.label})
 تفاصيل الحادث: ${form.description || "لا يوجد وصف للمشكلة"}
 الإجراء الفوري المتخذ محلياً: ${form.correctiveAction || "لا يوجد"}`;
     
@@ -219,40 +220,7 @@ export default function ReportForm() {
   };
 
   const riskScore = form.severity * form.probability;
-  const getRiskLevel = (score: number) => {
-    if (score >= 46) return { 
-      label: language === "en" ? "VH → Very High (مرتفع جداً)" : "VH → مرتفع جداً (Very High)", 
-      color: "text-red-500", 
-      bg: "bg-red-500/20" 
-    };
-    if (score >= 30) return { 
-      label: language === "en" ? "H → High (مرتفع)" : "H → مرتفع (High)", 
-      color: "text-orange-500", 
-      bg: "bg-orange-500/20" 
-    };
-    if (score >= 19) return { 
-      label: language === "en" ? "M+ → Medium Plus (أعلى من المتوسط)" : "M+ → أعلى من المتوسط (Medium Plus)", 
-      color: "text-amber-500", 
-      bg: "bg-amber-500/20" 
-    };
-    if (score >= 9) return { 
-      label: language === "en" ? "M → Medium (متوسط)" : "M → متوسط (Medium)", 
-      color: "text-yellow-500", 
-      bg: "bg-yellow-500/20" 
-    };
-    if (score >= 4) return { 
-      label: language === "en" ? "L → Low (منخفض)" : "L → منخفض (Low)", 
-      color: "text-green-500", 
-      bg: "bg-green-500/20" 
-    };
-    return { 
-      label: language === "en" ? "VL → Very Low (منخفض جداً)" : "VL → منخفض جداً (Very Low)", 
-      color: "text-cyan-400", 
-      bg: "bg-cyan-400/20" 
-    };
-  };
-
-  const riskLevel = getRiskLevel(riskScore);
+  const riskLevel = getRiskLevel(riskScore, language);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -340,18 +308,6 @@ export default function ReportForm() {
     setForm(prev => ({ ...prev, files: prev.files.filter((_, i) => i !== index) }));
   };
 
-  const triggerCameraMock = () => {
-    const mockBase64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // 1x1 GIF Base64
-    setForm(prev => ({
-      ...prev,
-      files: [...prev.files, { 
-        name: `CAMERA_SNAP_${Date.now()}.png`,
-        type: "image/png",
-        base64: mockBase64
-      }]
-    }));
-  };
-
   const handleNextStep = () => {
     if (!form.employeeName.trim()) {
       alert(language === "en" ? "Please fill in the Employee Name field." : "يرجى كتابة اسم الموظف أولاً.");
@@ -425,12 +381,16 @@ export default function ReportForm() {
     }
   };
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!isOnline) {
       alert(language === "en" ? "You are offline. Submitting new incident reports requires an active internet connection." : "أنت غير متصل بالإنترنت. إرسال بلاغات جديدة يتطلب اتصالاً نشطاً بالإنترنت.");
       return;
     }
+    setIsSubmitting(true);
     try {
       const response = await fetch("/api/incidents", {
         method: "POST",
@@ -438,29 +398,33 @@ export default function ReportForm() {
         body: JSON.stringify({ ...form, riskScore }),
       });
       
-      if (response.ok) {
-        const data = await response.json();
-        const generateFallbackId = () => {
-          const l = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
-          const n = Math.floor(10000 + Math.random() * 90000);
-          return `${l}${n}`;
-        };
-        setSubmittedIncidentId(data.id || generateFallbackId());
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.id) {
+        setSubmittedIncidentId(data.id);
         setStep(3); // Success Screen step
+        if (Array.isArray(data.fileErrors) && data.fileErrors.length > 0) {
+          alert(
+            language === "en"
+              ? `Report saved (ID ${data.id}), but ${data.fileErrors.length} attachment(s) failed to upload.`
+              : `تم حفظ البلاغ برقم ${data.id}، لكن تعذّر رفع ${data.fileErrors.length} من المرفقات.`
+          );
+        }
       } else {
-        alert(language === "en" ? "Failed to record incident report." : "فشل تسجيل البلاغ، يرجى المحاولة لاحقاً.");
+        alert((language === "en" ? "Failed to record incident report. " : "فشل تسجيل البلاغ، يرجى المحاولة لاحقاً. ") + (data.error || ""));
       }
     } catch (error) {
       console.error(error);
       alert(language === "en" ? "Network error while submitting." : "خطأ في الاتصال بالشبكة كرر المحاولة.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   return (
-    <div className={cn("min-h-screen pb-12", isRTL ? "pr-64" : "pl-64")}>
+    <div className={cn("min-h-screen pb-12", isRTL ? "lg:pr-64" : "lg:pl-64")}>
       <Sidebar />
       
-      <header className="p-8">
+      <header className="p-4 lg:p-8">
         <h1 className="text-4xl font-bold tracking-tight">{t.reportIncident}</h1>
         <div className="flex items-center gap-2 text-white/50 mt-2">
           <Clock className="w-4 h-4" />
@@ -469,7 +433,7 @@ export default function ReportForm() {
       </header>
 
       {!isOnline && (
-        <div className="mx-8 mb-6 p-4 bg-red-400/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-400">
+        <div className="mx-4 lg:mx-8 mb-6 p-4 bg-red-400/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-400">
           <WifiOff className="w-5 h-5 shrink-0" />
           <div className="text-xs">
             <p className="font-bold">{language === "en" ? "Offline Mode Active" : "وضع عدم الاتصال بالإنترنت نشط"}</p>
@@ -478,7 +442,7 @@ export default function ReportForm() {
         </div>
       )}
 
-      <main className="px-8 max-w-4xl">
+      <main className="px-4 lg:px-8 max-w-4xl">
         <form onSubmit={handleSubmit} className="space-y-8">
           <AnimatePresence mode="wait">
             {step === 1 && (
@@ -750,9 +714,10 @@ export default function ReportForm() {
                   </GlassButton>
                   <GlassButton 
                     type="submit" 
+                    disabled={isSubmitting}
                     className="flex items-center gap-2 px-12 py-4 bg-brand-primary text-black hover:bg-brand-primary/90"
                   >
-                    <Check className="w-5 h-5" />
+                    {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
                     {t.submit}
                   </GlassButton>
                 </div>

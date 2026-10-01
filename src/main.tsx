@@ -213,7 +213,12 @@ async function handleApi(path: string, method: string, init?: RequestInit): Prom
     return toResponse(await callSheets("aiSuggest", body), (d) => ({ suggestions: d.suggestions, source: d.source }));
   }
   if (path === "ai/chat" && method === "POST") {
-    return toResponse(await callSheets("aiChat", { incident: body.incident, messages: body.messages }), (d) => ({ reply: d.reply, source: d.source }));
+    return toResponse(await callSheets("aiChat", {
+      incident: body.incident,
+      incidentId: body.incidentId,
+      mode: body.mode,
+      messages: body.messages
+    }), (d) => ({ reply: d.reply, source: d.source }));
   }
 
   return jsonResponse({ error: `Unknown API route: ${method} /api/${path}` }, 404);

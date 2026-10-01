@@ -2,6 +2,7 @@ import React, { useEffect, Suspense, lazy } from 'react';
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useStore } from './store/useStore';
 import { Background } from './components/UI/Background';
+import { AiAssistant } from './components/AI/AiAssistant';
 import Login from './pages/Login';
 // لوحة التحكم تُحمَّل عند الحاجة فقط حتى تفتح صفحة الإبلاغ أسرع على الموبايل
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -27,6 +28,8 @@ function MainLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen relative">
       <Background />
       {children}
+      {/* مساعد السلامة الذكي العائم — متاح للجميع في كل الصفحات */}
+      <AiAssistant />
     </div>
   );
 }
